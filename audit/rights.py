@@ -89,7 +89,8 @@ def license_status(license_source: str, metadata: dict) -> tuple[str, str]:
     source = (license_source or "").strip()
     agency = _metadata_mentions_agency(metadata)
     if not source:
-        return "unverified", "manifest 未提供 license_source,無法驗證授權,需人工補齊採購紀錄"
+        return "double_check", ("manifest 未提供 license_source,不代表圖有問題,"
+                                "請人工 double check 採購紀錄後補上來源")
     if agency and not source.startswith("stock:"):
         return "conflict", (f"metadata 出現圖庫名稱「{agency}」,"
                             f"但 license_source 為 {source},來源矛盾,需人工核對")

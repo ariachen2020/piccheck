@@ -21,7 +21,7 @@ SCOPES = ["(未指定)", "social", "paid_ad", "ooh", "print"]
 SEVERITY_ICON = {"critical": "🔴", "warning": "🟠", "info": "🔵"}
 LICENSE_LABELS = {
     "verified": ("✅ verified — 授權來源已登錄", st.success),
-    "unverified": ("⚠️ unverified — 未提供授權來源,圖再乾淨也不能放行", st.warning),
+    "double_check": ("🔍 double check — 未登錄授權來源,請人工確認採購紀錄後補上", st.warning),
     "conflict": ("🔴 conflict — metadata 與授權來源矛盾,需人工核對", st.error),
 }
 
@@ -147,7 +147,7 @@ with tab_single:
         col_a, col_b = st.columns(2)
         license_source = col_a.text_input(
             "授權來源(選填)", placeholder="stock:訂單號 / inhouse / agency",
-            help="空白一律標 unverified,不因圖看起來乾淨就放行")
+            help="空白會標 double_check(請人工確認採購紀錄),不因圖看起來乾淨就跳過")
         scope = col_b.selectbox("用途 usage_scope", SCOPES,
                                 help="影響肖像權與地標限制的嚴格度")
         run = st.button("開始審查", type="primary", disabled=uploaded is None)
