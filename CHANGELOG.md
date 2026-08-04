@@ -1,5 +1,22 @@
 # 更新日誌
 
+## 2026-08-04(晚間更新:版權風險審查模組)
+
+新功能
+- 依第二份規格書加入版權風險審查模組,雙層架構:第一層程式端檢查(audit/rights.py,不經 API),第二層 Claude vision 掃描(併入主 prompt 第四步)
+- 第一層:exiftool 讀取 EXIF/IPTC/XMP metadata(未安裝時自動降級用 Pillow)、與 manifest 的 license_source 交叉比對(矛盾標 conflict)、解析度過低標 low_res_suspect、C2PA 驗證介面(裝 c2patool 才啟用)
+- 第二層:掃描浮水印、第三方 IP、可辨識人臉、受限地標、AI 生成痕跡、editorial-only 素材六類風險訊號,依 usage_scope 調整嚴重度
+- manifest.csv 新增 license_source、usage_scope 欄位;results.csv 新增 rights_flag_count、max_severity、license_status 欄位
+- 終端摘要與網頁版把 critical 旗標和 license conflict 置頂顯示;critical 或 conflict 一律強制 needs_human_review
+- 反向圖搜留介面(--reverse-search 開關,尚未實作)
+- Streamlit 網頁版同步支援:單張審查加授權來源與用途欄位,批次讀取新欄位;新增 packages.txt 讓雲端環境也裝 exiftool
+
+驗收
+- 帶 Shutterstock 浮水印的測試圖正確觸發 watermark/critical,連圖庫編號都讀出並給出購買授權的建議動作;圖乾淨但 license_source 空白時維持 unverified(兩層 AND 關係);metadata 寫 Getty 配 inhouse 正確標 conflict;低解析度圖正確標 low_res_suspect
+
+設計原則(規格書共識)
+- 本模組不判定侵權,只輸出證據與旗標;視覺乾淨不等於授權乾淨;浮水印偵測寧可誤報;地標限制只提示並導向法務
+
 ## 2026-08-04
 
 新功能

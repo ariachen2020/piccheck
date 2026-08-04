@@ -23,6 +23,7 @@ from pathlib import Path
 import anthropic
 from PIL import Image
 
+import rights
 from prompts import SYSTEM_PROMPT, build_user_text
 
 DEFAULT_MODEL = os.environ.get("AUDIT_MODEL", "claude-sonnet-4-6")
@@ -107,20 +108,34 @@ def parse_response(raw: str) -> dict | None:
         return None
 
 
-def audit_one(client, model, image_path: Path, region, city, airport, copy_text):
+def audit_one(client, model, image_path: Path, region, city, airport, copy_text,
+              usage_scope=""):
     """Audit a single asset; returns (parsed_or_None, raw_text)."""
     img_b64, media_type = load_image_b64(image_path)
-    user_text = build_user_text(region, city, airport, copy_text)
+    user_text = build_user_text(region, city, airport, copy_text, usage_scope)
     raw = call_api(client, model, user_text, img_b64, media_type)
     return parse_response(raw), raw
 
 
-def row_from_result(filename: str, parsed: dict | None) -> dict:
+EMPTY_ROW = {"filename": "", "best_guess": "", "confidence": "", "verdict": "",
+             "verdict_reason": "", "copy_issue_count": "", "rights_flag_count": "",
+             "max_severity": "", "license_status": "", "needs_human_review": True}
+
+
+def row_from_result(filename: str, parsed: dict | None,
+                    local: dict | None = None) -> dict:
+    license_status = (local or {}).get("license_status", "")
     if parsed is None:
-        return {"filename": filename, "best_guess": "", "confidence": "",
-                "verdict": "parse_error", "verdict_reason": "回覆非合法 JSON,原文見 details",
-                "copy_issue_count": "", "needs_human_review": True}
+        return {**EMPTY_ROW, "filename": filename, "verdict": "parse_error",
+                "verdict_reason": "回覆非合法 JSON,原文見 details",
+                "license_status": license_status}
     ident = parsed.get("identification", {})
+    flags = parsed.get("rights_flags") or []
+    max_sev = rights.max_severity(flags)
+    # Critical flags and license conflicts always force human review
+    needs_review = (parsed.get("needs_human_review", True)
+                    or max_sev in ("critical", "warning")
+                    or license_status == "conflict")
     return {
         "filename": filename,
         "best_guess": ident.get("best_guess", ""),
@@ -128,23 +143,28 @@ def row_from_result(filename: str, parsed: dict | None) -> dict:
         "verdict": parsed.get("verdict", ""),
         "verdict_reason": parsed.get("verdict_reason", ""),
         "copy_issue_count": len(parsed.get("copy_issues") or []),
-        "needs_human_review": parsed.get("needs_human_review", True),
+        "rights_flag_count": len(flags),
+        "max_severity": max_sev,
+        "license_status": license_status,
+        "needs_human_review": needs_review,
     }
 
 
-def save_detail(details_dir: Path, filename: str, parsed: dict | None, raw: str):
+def save_detail(details_dir: Path, filename: str, parsed: dict | None, raw: str,
+                local: dict | None = None):
     out = details_dir / (Path(filename).stem + ".json")
-    if parsed is not None:
-        out.write_text(json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8")
-    else:
-        out.write_text(json.dumps({"parse_error": True, "raw": raw},
-                                  ensure_ascii=False, indent=2), encoding="utf-8")
+    detail = parsed if parsed is not None else {"parse_error": True, "raw": raw}
+    if local is not None:
+        detail = {**detail, "local_checks": local}
+    out.write_text(json.dumps(detail, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def print_result(row: dict):
     print(f"  辨識:{row['best_guess'] or '(無)'}(confidence: {row['confidence'] or '-'})")
     print(f"  verdict:{row['verdict']} — {row['verdict_reason']}")
-    print(f"  文案問題:{row['copy_issue_count']} 筆|需人工複查:{row['needs_human_review']}")
+    print(f"  文案問題:{row['copy_issue_count']} 筆|版權旗標:{row['rights_flag_count']} 筆"
+          f"(最高 {row['max_severity'] or '-'})|授權:{row['license_status'] or '-'}"
+          f"|需人工複查:{row['needs_human_review']}")
 
 
 def run_batch(args, client):
@@ -165,11 +185,13 @@ def run_batch(args, client):
         print(f"[{i}/{len(rows)}] {filename}")
         image_path = assets_dir / filename
         if not image_path.exists():
-            results.append({"filename": filename, "best_guess": "", "confidence": "",
-                            "verdict": "file_not_found", "verdict_reason": "assets 內找不到檔案",
-                            "copy_issue_count": "", "needs_human_review": True})
+            results.append({**EMPTY_ROW, "filename": filename,
+                            "verdict": "file_not_found",
+                            "verdict_reason": "assets 內找不到檔案"})
             print("  找不到檔案,略過。")
             continue
+        license_source = (m.get("license_source") or "").strip()
+        local = rights.local_checks(image_path, license_source)
         try:
             parsed, raw = audit_one(
                 client, args.model, image_path,
@@ -177,22 +199,24 @@ def run_batch(args, client):
                 (m.get("campaign_city") or "").strip(),
                 (m.get("campaign_airport") or "").strip(),
                 (m.get("copy_text") or "").strip(),
+                (m.get("usage_scope") or "").strip(),
             )
         except Exception as e:  # one bad asset must not kill the batch
-            results.append({"filename": filename, "best_guess": "", "confidence": "",
+            results.append({**EMPTY_ROW, "filename": filename,
                             "verdict": "api_error", "verdict_reason": str(e)[:200],
-                            "copy_issue_count": "", "needs_human_review": True})
+                            "license_status": local["license_status"]})
             print(f"  API 失敗:{e}")
             continue
-        save_detail(details_dir, filename, parsed, raw)
-        row = row_from_result(filename, parsed)
+        save_detail(details_dir, filename, parsed, raw, local)
+        row = row_from_result(filename, parsed, local)
         results.append(row)
         print_result(row)
         if args.delay > 0 and i < len(rows):
             time.sleep(args.delay)
 
     fieldnames = ["filename", "best_guess", "confidence", "verdict",
-                  "verdict_reason", "copy_issue_count", "needs_human_review"]
+                  "verdict_reason", "copy_issue_count", "rights_flag_count",
+                  "max_severity", "license_status", "needs_human_review"]
     results_csv = out_dir / "results.csv"
     with results_csv.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -203,8 +227,18 @@ def run_batch(args, client):
     for r in results:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
     flagged = [r["filename"] for r in results if r["needs_human_review"] is True]
+    criticals = [r["filename"] for r in results if r["max_severity"] == "critical"]
+    conflicts = [r["filename"] for r in results if r["license_status"] == "conflict"]
 
     print("\n===== 審查摘要 =====")
+    if criticals:
+        print(f"!! 版權 critical 旗標({len(criticals)} 筆),最優先處理:")
+        for name in criticals:
+            print(f"  - {name}")
+    if conflicts:
+        print(f"!! 授權來源矛盾 license conflict({len(conflicts)} 筆):")
+        for name in conflicts:
+            print(f"  - {name}")
     for verdict in ("match", "regional_mismatch", "mismatch", "uncertain"):
         if verdict in counts:
             print(f"  {verdict}:{counts.pop(verdict)} 筆")
@@ -224,10 +258,16 @@ def run_single(args, client):
     if not args.region:
         sys.exit("--single 模式必須提供 --region")
     print(f"審查 {image_path.name} ...")
+    local = rights.local_checks(image_path, args.license_source)
+    if args.reverse_search:
+        print(f"  {rights.reverse_search(image_path)['note']}")
     parsed, raw = audit_one(client, args.model, image_path,
-                            args.region, args.city, args.airport, args.copy)
-    row = row_from_result(image_path.name, parsed)
+                            args.region, args.city, args.airport, args.copy,
+                            args.scope)
+    row = row_from_result(image_path.name, parsed, local)
     print_result(row)
+    print("\n本地檢查(第一層):")
+    print(json.dumps(local, ensure_ascii=False, indent=2))
     if parsed is not None:
         print("\n完整回覆:")
         print(json.dumps(parsed, ensure_ascii=False, indent=2))
@@ -246,6 +286,11 @@ def main():
     p.add_argument("--city", default="", help="宣傳城市(--single 用)")
     p.add_argument("--airport", default="", help="IATA 機場代碼(--single 用)")
     p.add_argument("--copy", default="", help="文案全文(--single 用)")
+    p.add_argument("--license-source", default="", dest="license_source",
+                   help="授權來源,如 stock:12345 / inhouse / agency(--single 用)")
+    p.add_argument("--scope", default="", help="用途:social / paid_ad / ooh / print(--single 用)")
+    p.add_argument("--reverse-search", action="store_true",
+                   help="對被標記的圖做反向圖搜(尚未實作,介面保留)")
     p.add_argument("--delay", type=float, default=0.5, help="每筆之間的延遲秒數")
     p.add_argument("--model", default=DEFAULT_MODEL, help="模型 ID")
     args = p.parse_args()

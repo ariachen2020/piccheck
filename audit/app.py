@@ -5,15 +5,25 @@
 import csv
 import io
 import json
+import tempfile
 import time
+from pathlib import Path
 
 import anthropic
 import streamlit as st
 
+import rights
 from audit import DEFAULT_MODEL, call_api, parse_response, prep_image_bytes, row_from_result
 from prompts import build_user_text
 
 REGIONS = ["Europe", "North America", "Northeast Asia", "Southeast Asia", "Oceania"]
+SCOPES = ["(未指定)", "social", "paid_ad", "ooh", "print"]
+SEVERITY_ICON = {"critical": "🔴", "warning": "🟠", "info": "🔵"}
+LICENSE_LABELS = {
+    "verified": ("✅ verified — 授權來源已登錄", st.success),
+    "unverified": ("⚠️ unverified — 未提供授權來源,圖再乾淨也不能放行", st.warning),
+    "conflict": ("🔴 conflict — metadata 與授權來源矛盾,需人工核對", st.error),
+}
 
 VERDICT_LABELS = {
     "match": ("✅ match — 圖與宣傳標的一致", st.success),
@@ -48,12 +58,29 @@ def get_client() -> anthropic.Anthropic | None:
     return anthropic.Anthropic(api_key=api_key)
 
 
-def audit_bytes(client, data: bytes, ext: str, region, city, airport, copy_text):
+def audit_bytes(client, data: bytes, ext: str, region, city, airport, copy_text,
+                usage_scope=""):
     """Audit one image given raw bytes; returns (parsed_or_None, raw_text)."""
     img_b64, media_type = prep_image_bytes(data, ext)
-    user_text = build_user_text(region, city, airport, copy_text)
+    user_text = build_user_text(region, city, airport, copy_text, usage_scope)
     raw = call_api(client, model, user_text, img_b64, media_type)
     return parse_response(raw), raw
+
+
+def local_checks_bytes(data: bytes, ext: str, license_source: str) -> dict:
+    """Run layer-1 rights checks on uploaded bytes via a temp file."""
+    suffix = "." + ext.lstrip(".")
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(data)
+        tmp_path = Path(tmp.name)
+    try:
+        return rights.local_checks(tmp_path, license_source)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def norm_scope(selected: str) -> str:
+    return "" if selected == "(未指定)" else selected
 
 
 def render_verdict(parsed: dict):
@@ -78,8 +105,26 @@ def render_verdict(parsed: dict):
         for issue in copy_issues:
             st.markdown(f"- `{issue.get('type', '?')}` {issue.get('detail', '')}")
 
+    flags = parsed.get("rights_flags") or []
+    if flags:
+        st.markdown(f"**版權風險訊號({len(flags)} 筆):**")
+        for f in flags:
+            icon = SEVERITY_ICON.get(f.get("severity", ""), "▫️")
+            st.markdown(f"- {icon} `{f.get('type', '?')}`({f.get('severity', '')})"
+                        f" {f.get('detail', '')}")
+            if f.get("action"):
+                st.caption(f"　建議動作:{f['action']}")
+
     if parsed.get("needs_human_review"):
         st.markdown("⚠️ **此素材需要人工複查**")
+
+
+def render_local_checks(local: dict):
+    label, box = LICENSE_LABELS.get(local["license_status"],
+                                    (local["license_status"], st.info))
+    box(label)
+    with st.expander("本地檢查詳情(metadata / 解析度)"):
+        st.json(local)
 
 
 def handle_api_error(e: Exception):
@@ -99,6 +144,12 @@ with tab_single:
         city = st.text_input("宣傳城市(英文,選填)", placeholder="例如 Ontario;空白 = 泛區域形象素材")
         airport = st.text_input("IATA 機場代碼(選填)", placeholder="例如 ONT — 同名地防呆的關鍵欄位")
         copy_text = st.text_area("文案全文(選填)", placeholder="空白則只審圖")
+        col_a, col_b = st.columns(2)
+        license_source = col_a.text_input(
+            "授權來源(選填)", placeholder="stock:訂單號 / inhouse / agency",
+            help="空白一律標 unverified,不因圖看起來乾淨就放行")
+        scope = col_b.selectbox("用途 usage_scope", SCOPES,
+                                help="影響肖像權與地標限制的嚴格度")
         run = st.button("開始審查", type="primary", disabled=uploaded is None)
         if uploaded is not None:
             st.image(uploaded, caption=uploaded.name, use_container_width=True)
@@ -108,11 +159,14 @@ with tab_single:
             client = get_client()
             if client:
                 ext = uploaded.name.rsplit(".", 1)[-1]
+                local = local_checks_bytes(uploaded.getvalue(), ext,
+                                           license_source.strip())
                 with st.spinner("審查中..."):
                     try:
                         parsed, raw = audit_bytes(
                             client, uploaded.getvalue(), ext,
                             region, city.strip(), airport.strip(), copy_text.strip(),
+                            norm_scope(scope),
                         )
                     except Exception as e:
                         handle_api_error(e)
@@ -121,14 +175,16 @@ with tab_single:
                             st.error("模型回覆無法解析為 JSON,原始回覆如下:")
                             st.code(raw)
                         else:
+                            render_local_checks(local)
                             render_verdict(parsed)
                             with st.expander("完整 JSON 回覆"):
-                                st.json(parsed)
+                                st.json({**parsed, "local_checks": local})
 
 with tab_batch:
     st.markdown(
         "上傳 **manifest.csv**(欄位:`filename, campaign_region, campaign_city, "
-        "campaign_airport, copy_text`)與對應的圖片檔,一次審查整批素材。"
+        "campaign_airport, copy_text, license_source, usage_scope`)與對應的圖片檔,"
+        "一次審查整批素材。"
     )
     manifest_file = st.file_uploader("上傳 manifest.csv", type=["csv"])
     image_files = st.file_uploader(
@@ -149,33 +205,48 @@ with tab_batch:
             else:
                 results, details = [], {}
                 progress = st.progress(0.0, text="開始審查...")
+                from audit import EMPTY_ROW
                 for i, m in enumerate(rows, 1):
                     filename = (m.get("filename") or "").strip()
                     progress.progress(i / len(rows), text=f"[{i}/{len(rows)}] {filename}")
                     if filename not in images:
-                        results.append({"filename": filename, "best_guess": "", "confidence": "",
-                                        "verdict": "file_not_found", "verdict_reason": "未上傳此圖片",
-                                        "copy_issue_count": "", "needs_human_review": True})
+                        results.append({**EMPTY_ROW, "filename": filename,
+                                        "verdict": "file_not_found",
+                                        "verdict_reason": "未上傳此圖片"})
                         continue
+                    f = images[filename]
+                    ext = filename.rsplit(".", 1)[-1]
+                    local = local_checks_bytes(
+                        f.getvalue(), ext, (m.get("license_source") or "").strip())
                     try:
-                        f = images[filename]
                         parsed, raw = audit_bytes(
-                            client, f.getvalue(), filename.rsplit(".", 1)[-1],
+                            client, f.getvalue(), ext,
                             (m.get("campaign_region") or "").strip(),
                             (m.get("campaign_city") or "").strip(),
                             (m.get("campaign_airport") or "").strip(),
                             (m.get("copy_text") or "").strip(),
+                            (m.get("usage_scope") or "").strip(),
                         )
                     except Exception as e:  # one bad asset must not kill the batch
-                        results.append({"filename": filename, "best_guess": "", "confidence": "",
+                        results.append({**EMPTY_ROW, "filename": filename,
                                         "verdict": "api_error", "verdict_reason": str(e)[:200],
-                                        "copy_issue_count": "", "needs_human_review": True})
+                                        "license_status": local["license_status"]})
                         continue
-                    details[filename] = parsed if parsed is not None else {"parse_error": True, "raw": raw}
-                    results.append(row_from_result(filename, parsed))
+                    detail = parsed if parsed is not None else {"parse_error": True, "raw": raw}
+                    details[filename] = {**detail, "local_checks": local}
+                    results.append(row_from_result(filename, parsed, local))
                     if i < len(rows):
                         time.sleep(0.5)
                 progress.empty()
+
+                criticals = [r["filename"] for r in results if r["max_severity"] == "critical"]
+                conflicts = [r["filename"] for r in results if r["license_status"] == "conflict"]
+                if criticals:
+                    st.error("🔴 版權 critical 旗標,最優先處理:" +
+                             "".join(f"\n- {n}" for n in criticals))
+                if conflicts:
+                    st.error("🔴 授權來源矛盾(license conflict):" +
+                             "".join(f"\n- {n}" for n in conflicts))
 
                 counts = {}
                 for r in results:
@@ -199,7 +270,8 @@ with tab_batch:
                 buf = io.StringIO()
                 writer = csv.DictWriter(buf, fieldnames=[
                     "filename", "best_guess", "confidence", "verdict",
-                    "verdict_reason", "copy_issue_count", "needs_human_review"])
+                    "verdict_reason", "copy_issue_count", "rights_flag_count",
+                    "max_severity", "license_status", "needs_human_review"])
                 writer.writeheader()
                 writer.writerows(results)
                 st.download_button("下載 results.csv", buf.getvalue().encode("utf-8-sig"),
