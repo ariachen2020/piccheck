@@ -47,7 +47,7 @@ with st.sidebar:
     st.markdown(
         "**API key 怎麼取得?**\n\n"
         "到 [console.anthropic.com](https://console.anthropic.com/) "
-        "註冊後,在 API Keys 頁面建立。每張圖審查成本約 0.01 美元。"
+        "註冊後,在 API Keys 頁面建立。每張圖審查成本約 0.03 美元。"
     )
 
 
