@@ -134,7 +134,14 @@ def handle_api_error(e: Exception):
         st.error(f"審查失敗:{e}")
 
 
-tab_single, tab_batch = st.tabs(["單張審查", "批次審查"])
+tab_single, tab_batch, tab_help = st.tabs(["單張審查", "批次審查", "使用說明"])
+
+with tab_help:
+    manual = Path(__file__).resolve().parent.parent / "使用說明.md"
+    if manual.exists():
+        st.markdown(manual.read_text(encoding="utf-8"))
+    else:
+        st.info("使用說明文件不存在。")
 
 with tab_single:
     col_input, col_result = st.columns([1, 1])
