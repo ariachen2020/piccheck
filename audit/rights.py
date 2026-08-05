@@ -2,9 +2,13 @@
 # license-source cross-check. This layer never judges ownership — it only
 # collects evidence for human verification.
 
+import base64
+import io
 import json
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from PIL import Image
@@ -129,11 +133,90 @@ def max_severity(rights_flags: list) -> str:
     return best
 
 
-def reverse_search(path: Path) -> dict:
-    """Reverse image search stub (TinEye / Google Vision WEB_DETECTION).
+# Stock agency domains: a reverse-search hit on these is a strong signal the
+# image is licensed stock and the purchase record must be verified
+STOCK_DOMAINS = [
+    "shutterstock.com", "gettyimages.com", "istockphoto.com", "stock.adobe.com",
+    "alamy.com", "dreamstime.com", "depositphotos.com", "123rf.com",
+    "stocksy.com", "westend61.de", "unsplash.com", "pexels.com", "pixabay.com",
+]
 
-    Interface reserved per spec; only flagged images should be queried
-    when implemented, to control cost.
+VISION_ENDPOINT = "https://vision.googleapis.com/v1/images:annotate"
+VISION_MAX_BYTES = 3_500_000  # downscale before upload above this size
+
+
+def _shrink_for_vision(data: bytes) -> bytes:
+    if len(data) <= VISION_MAX_BYTES:
+        return data
+    img = Image.open(io.BytesIO(data))
+    img.thumbnail((1600, 1600))
+    if img.mode in ("RGBA", "P", "LA"):
+        img = img.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
+
+def _stock_hit(url: str) -> bool:
+    return any(domain in url for domain in STOCK_DOMAINS)
+
+
+def reverse_search(data: bytes, api_key: str) -> dict:
+    """Reverse image search via Google Cloud Vision WEB_DETECTION.
+
+    Queries where else on the web this image (or near-copies) appears.
+    Callers should only query flagged images in batch runs to stay within
+    the free tier (1000 requests/month, ~USD 3.5 per extra 1000).
     """
-    return {"implemented": False,
-            "note": "反向圖搜尚未實作,介面保留(--reverse-search)"}
+    if not api_key:
+        return {"implemented": True, "status": "no_key",
+                "note": "未提供 Google Vision API key,略過反向圖搜"}
+    body = json.dumps({"requests": [{
+        "image": {"content": base64.b64encode(_shrink_for_vision(data)).decode("ascii")},
+        "features": [{"type": "WEB_DETECTION", "maxResults": 15}],
+    }]}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{VISION_ENDPOINT}?key={api_key}", data=body,
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")[:300]
+        return {"implemented": True, "status": "error",
+                "note": f"Google Vision API 回應 {e.code}:{detail}"}
+    except Exception as e:
+        return {"implemented": True, "status": "error",
+                "note": f"反向圖搜失敗:{e}"}
+
+    web = (payload.get("responses") or [{}])[0].get("webDetection", {})
+    full = [m.get("url", "") for m in web.get("fullMatchingImages", [])]
+    partial = [m.get("url", "") for m in web.get("partialMatchingImages", [])]
+    pages = [{"url": p.get("url", ""), "title": p.get("pageTitle", "")}
+             for p in web.get("pagesWithMatchingImages", [])]
+    labels = [g.get("label", "") for g in web.get("webEntities", [])
+              if g.get("label")]
+    stock_hits = sorted({u for u in full + partial + [p["url"] for p in pages]
+                         if _stock_hit(u)})
+    notes = []
+    if stock_hits:
+        notes.append("圖片出現在圖庫網站上,極可能是需授權的圖庫素材,請核對採購紀錄")
+    if full and not stock_hits:
+        notes.append("網路上找到完全相同的圖,請確認來源與授權")
+    if partial and not full:
+        notes.append("找到部分相符的圖(可能是裁切或改製版本),建議人工比對")
+    if not (full or partial or pages):
+        notes.append("網路上未找到相符圖片(不代表沒有版權,僅供參考)")
+    return {
+        "implemented": True,
+        "status": "ok",
+        "full_match_count": len(full),
+        "partial_match_count": len(partial),
+        "stock_site_hit": bool(stock_hits),
+        "stock_site_urls": stock_hits[:10],
+        "full_matches": full[:10],
+        "partial_matches": partial[:10],
+        "pages": pages[:10],
+        "web_labels": labels[:8],
+        "notes": notes,
+    }

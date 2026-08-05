@@ -1,5 +1,20 @@
 # 更新日誌
 
+## 2026-08-05(反向圖搜上線)
+
+新功能
+- 反向圖搜(第三層)正式實作:接 Google Cloud Vision WEB_DETECTION,查詢圖片出現在網路上的位置,回報完全相符、部分相符、出現此圖的網頁清單與網路常見描述
+- 命中圖庫網站(Shutterstock、Getty、iStock 等 13 個常見網域)時特別標紅提醒核對採購紀錄,並強制 needs_human_review
+- 成本控制照既定共識:批次模式只查「已被標記」的圖(有 rights_flags、或授權狀態 double_check / conflict);單張模式勾選即查。Google 免費額度每月 1000 次,超出每千次約 3.5 美元
+- CLI:--reverse-search 開關由介面保留轉為正式功能,金鑰讀環境變數 GOOGLE_VISION_API_KEY;results.csv 新增 reverse_hits、reverse_stock_hit 欄位
+- 網頁版:側欄新增 Google Vision API Key 欄位(僅存當次瀏覽器工作階段),單張與批次分頁各加反向圖搜選項,批次摘要把圖庫命中置頂標紅
+- 大圖自動縮至 1600px 再送 Google,避免超過 API 上限
+- 使用說明同步更新:新增 Google API Key 申請步驟(10 分鐘教學)、反向圖搜結果解讀;「不能做到的事」中重製圖段落改為說明反向圖搜的能力邊界(原圖沒上過網仍查不到)
+
+驗收
+- 以模擬 Google 回應測試:圖庫命中正確標紅並強制人工複查、無相符結果給出「不代表沒有版權」的中性註記、超大圖正確縮圖、未提供金鑰時 CLI 明確報錯並指向使用說明
+- 真實 API 連線測試待 Aria 申請 Google 金鑰後進行
+
 ## 2026-08-04(晚間更新:版權風險審查模組)
 
 新功能

@@ -13,7 +13,8 @@ import anthropic
 import streamlit as st
 
 import rights
-from audit import DEFAULT_MODEL, call_api, parse_response, prep_image_bytes, row_from_result
+from audit import (DEFAULT_MODEL, apply_reverse_result, call_api, is_flagged,
+                   parse_response, prep_image_bytes, row_from_result)
 from prompts import build_user_text
 
 REGIONS = ["Europe", "North America", "Northeast Asia", "Southeast Asia", "Oceania"]
@@ -43,11 +44,17 @@ with st.sidebar:
         help="只保存在你目前的瀏覽器工作階段,不會被儲存或上傳到任何地方。",
     )
     model = st.text_input("模型", value=DEFAULT_MODEL)
+    vision_key = st.text_input(
+        "Google Vision API Key(選填)", type="password",
+        help="反向圖搜用。同樣只保存在目前的瀏覽器工作階段。取得方式見「使用說明」分頁。",
+    )
     st.markdown("---")
     st.markdown(
         "**API key 怎麼取得?**\n\n"
         "到 [console.anthropic.com](https://console.anthropic.com/) "
-        "註冊後,在 API Keys 頁面建立。每張圖審查成本約 0.03 美元。"
+        "註冊後,在 API Keys 頁面建立。每張圖審查成本約 0.03 美元。\n\n"
+        "反向圖搜另需 Google Vision API key(每月前 1000 次免費),"
+        "取得步驟見「使用說明」分頁。"
     )
 
 
@@ -127,6 +134,31 @@ def render_local_checks(local: dict):
         st.json(local)
 
 
+def render_reverse(rs: dict):
+    st.markdown("### 反向圖搜結果")
+    if rs.get("status") == "no_key":
+        st.warning("未輸入 Google Vision API Key,已略過反向圖搜。")
+        return
+    if rs.get("status") == "error":
+        st.error(rs.get("note", "反向圖搜失敗"))
+        return
+    if rs.get("stock_site_hit"):
+        st.error("🔴 圖片出現在圖庫網站上,極可能是需授權的圖庫素材,請核對採購紀錄:" +
+                 "".join(f"\n- {u}" for u in rs.get("stock_site_urls", [])))
+    for note in rs.get("notes", []):
+        st.markdown(f"- {note}")
+    st.markdown(f"完全相符 {rs.get('full_match_count', 0)} 筆|"
+                f"部分相符 {rs.get('partial_match_count', 0)} 筆")
+    pages = rs.get("pages", [])
+    if pages:
+        with st.expander(f"出現此圖的網頁({len(pages)} 筆)"):
+            for p in pages:
+                title = p.get("title") or p.get("url", "")
+                st.markdown(f"- [{title}]({p.get('url', '')})")
+    if rs.get("web_labels"):
+        st.caption("網路上對這張圖的常見描述:" + "、".join(rs["web_labels"]))
+
+
 def handle_api_error(e: Exception):
     if isinstance(e, anthropic.AuthenticationError):
         st.error("API key 無效,請檢查左側輸入的 key。")
@@ -157,6 +189,10 @@ with tab_single:
             help="空白會標 double_check(請人工確認採購紀錄),不因圖看起來乾淨就跳過")
         scope = col_b.selectbox("用途 usage_scope", SCOPES,
                                 help="影響肖像權與地標限制的嚴格度")
+        do_reverse = st.checkbox(
+            "反向圖搜(查這張圖在網路上的出處)",
+            help="用 Google Vision 查這張圖出現在哪些網站,抓圖庫素材與轉存圖。"
+                 "需在左側輸入 Google Vision API Key。")
         run = st.button("開始審查", type="primary", disabled=uploaded is None)
         if uploaded is not None:
             st.image(uploaded, caption=uploaded.name, use_container_width=True)
@@ -184,8 +220,17 @@ with tab_single:
                         else:
                             render_local_checks(local)
                             render_verdict(parsed)
+                            reverse = None
+                            if do_reverse:
+                                with st.spinner("反向圖搜中..."):
+                                    reverse = rights.reverse_search(
+                                        uploaded.getvalue(), vision_key)
+                                render_reverse(reverse)
+                            detail = {**parsed, "local_checks": local}
+                            if reverse is not None:
+                                detail["reverse_search"] = reverse
                             with st.expander("完整 JSON 回覆"):
-                                st.json({**parsed, "local_checks": local})
+                                st.json(detail)
 
 with tab_batch:
     st.markdown(
@@ -197,6 +242,10 @@ with tab_batch:
     image_files = st.file_uploader(
         "上傳圖片(可多選)", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True,
     )
+    batch_reverse = st.checkbox(
+        "對被標記的圖做反向圖搜",
+        help="只查有版權旗標或授權待確認的圖,控制 Google Vision 費用"
+             "(每月前 1000 次免費)。需在左側輸入 Google Vision API Key。")
     run_batch = st.button(
         "開始批次審查", type="primary",
         disabled=manifest_file is None or not image_files,
@@ -240,14 +289,24 @@ with tab_batch:
                                         "license_status": local["license_status"]})
                         continue
                     detail = parsed if parsed is not None else {"parse_error": True, "raw": raw}
+                    row = row_from_result(filename, parsed, local)
+                    if batch_reverse and is_flagged(row):
+                        rs = rights.reverse_search(f.getvalue(), vision_key)
+                        apply_reverse_result(row, rs)
+                        detail = {**detail, "reverse_search": rs}
                     details[filename] = {**detail, "local_checks": local}
-                    results.append(row_from_result(filename, parsed, local))
+                    results.append(row)
                     if i < len(rows):
                         time.sleep(0.5)
                 progress.empty()
 
                 criticals = [r["filename"] for r in results if r["max_severity"] == "critical"]
                 conflicts = [r["filename"] for r in results if r["license_status"] == "conflict"]
+                stock_hits = [r["filename"] for r in results
+                              if r.get("reverse_stock_hit") is True]
+                if stock_hits:
+                    st.error("🔴 反向圖搜命中圖庫網站,請核對採購紀錄:" +
+                             "".join(f"\n- {n}" for n in stock_hits))
                 if criticals:
                     st.error("🔴 版權 critical 旗標,最優先處理:" +
                              "".join(f"\n- {n}" for n in criticals))
@@ -278,7 +337,8 @@ with tab_batch:
                 writer = csv.DictWriter(buf, fieldnames=[
                     "filename", "best_guess", "confidence", "verdict",
                     "verdict_reason", "copy_issue_count", "rights_flag_count",
-                    "max_severity", "license_status", "needs_human_review"])
+                    "max_severity", "license_status", "reverse_hits",
+                    "reverse_stock_hit", "needs_human_review"])
                 writer.writeheader()
                 writer.writerows(results)
                 st.download_button("下載 results.csv", buf.getvalue().encode("utf-8-sig"),

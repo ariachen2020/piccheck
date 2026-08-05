@@ -119,7 +119,24 @@ def audit_one(client, model, image_path: Path, region, city, airport, copy_text,
 
 EMPTY_ROW = {"filename": "", "best_guess": "", "confidence": "", "verdict": "",
              "verdict_reason": "", "copy_issue_count": "", "rights_flag_count": "",
-             "max_severity": "", "license_status": "", "needs_human_review": True}
+             "max_severity": "", "license_status": "", "reverse_hits": "",
+             "reverse_stock_hit": "", "needs_human_review": True}
+
+
+def is_flagged(row: dict) -> bool:
+    """Batch reverse search only queries flagged images, to control cost."""
+    return bool(row.get("rights_flag_count") or 0) or \
+        row.get("license_status") in ("double_check", "conflict")
+
+
+def apply_reverse_result(row: dict, rs: dict | None):
+    """Fold a reverse-search report into a results row."""
+    if not rs or rs.get("status") != "ok":
+        return
+    row["reverse_hits"] = rs["full_match_count"] + rs["partial_match_count"]
+    row["reverse_stock_hit"] = rs["stock_site_hit"]
+    if rs["stock_site_hit"]:  # stock-site hit always forces human review
+        row["needs_human_review"] = True
 
 
 def row_from_result(filename: str, parsed: dict | None,
@@ -151,11 +168,13 @@ def row_from_result(filename: str, parsed: dict | None,
 
 
 def save_detail(details_dir: Path, filename: str, parsed: dict | None, raw: str,
-                local: dict | None = None):
+                local: dict | None = None, reverse: dict | None = None):
     out = details_dir / (Path(filename).stem + ".json")
     detail = parsed if parsed is not None else {"parse_error": True, "raw": raw}
     if local is not None:
         detail = {**detail, "local_checks": local}
+    if reverse is not None:
+        detail = {**detail, "reverse_search": reverse}
     out.write_text(json.dumps(detail, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -165,9 +184,21 @@ def print_result(row: dict):
     print(f"  文案問題:{row['copy_issue_count']} 筆|版權旗標:{row['rights_flag_count']} 筆"
           f"(最高 {row['max_severity'] or '-'})|授權:{row['license_status'] or '-'}"
           f"|需人工複查:{row['needs_human_review']}")
+    if row.get("reverse_hits") != "":
+        stock = ",且出現在圖庫網站!" if row.get("reverse_stock_hit") else ""
+        print(f"  反向圖搜:{row['reverse_hits']} 筆相符{stock}")
+
+
+def get_vision_key(args) -> str:
+    key = os.environ.get("GOOGLE_VISION_API_KEY", "")
+    if args.reverse_search and not key:
+        sys.exit("--reverse-search 需要環境變數 GOOGLE_VISION_API_KEY"
+                 "(Google Cloud Vision API 金鑰,取得方式見使用說明.md)。")
+    return key
 
 
 def run_batch(args, client):
+    vision_key = get_vision_key(args)
     manifest = Path(args.manifest)
     assets_dir = Path(args.assets)
     out_dir = Path(args.out)
@@ -207,8 +238,15 @@ def run_batch(args, client):
                             "license_status": local["license_status"]})
             print(f"  API 失敗:{e}")
             continue
-        save_detail(details_dir, filename, parsed, raw, local)
         row = row_from_result(filename, parsed, local)
+        reverse = None
+        if args.reverse_search and is_flagged(row):
+            print("  已被標記,執行反向圖搜...")
+            reverse = rights.reverse_search(image_path.read_bytes(), vision_key)
+            if reverse.get("status") == "error":
+                print(f"  反向圖搜失敗:{reverse['note']}")
+            apply_reverse_result(row, reverse)
+        save_detail(details_dir, filename, parsed, raw, local, reverse)
         results.append(row)
         print_result(row)
         if args.delay > 0 and i < len(rows):
@@ -216,7 +254,8 @@ def run_batch(args, client):
 
     fieldnames = ["filename", "best_guess", "confidence", "verdict",
                   "verdict_reason", "copy_issue_count", "rights_flag_count",
-                  "max_severity", "license_status", "needs_human_review"]
+                  "max_severity", "license_status", "reverse_hits",
+                  "reverse_stock_hit", "needs_human_review"]
     results_csv = out_dir / "results.csv"
     with results_csv.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -229,11 +268,16 @@ def run_batch(args, client):
     flagged = [r["filename"] for r in results if r["needs_human_review"] is True]
     criticals = [r["filename"] for r in results if r["max_severity"] == "critical"]
     conflicts = [r["filename"] for r in results if r["license_status"] == "conflict"]
+    stock_hits = [r["filename"] for r in results if r.get("reverse_stock_hit") is True]
 
     print("\n===== 審查摘要 =====")
     if criticals:
         print(f"!! 版權 critical 旗標({len(criticals)} 筆),最優先處理:")
         for name in criticals:
+            print(f"  - {name}")
+    if stock_hits:
+        print(f"!! 反向圖搜命中圖庫網站({len(stock_hits)} 筆),請核對採購紀錄:")
+        for name in stock_hits:
             print(f"  - {name}")
     if conflicts:
         print(f"!! 授權來源矛盾 license conflict({len(conflicts)} 筆):")
@@ -257,17 +301,24 @@ def run_single(args, client):
         sys.exit(f"找不到圖片:{image_path}")
     if not args.region:
         sys.exit("--single 模式必須提供 --region")
+    vision_key = get_vision_key(args)
     print(f"審查 {image_path.name} ...")
     local = rights.local_checks(image_path, args.license_source)
-    if args.reverse_search:
-        print(f"  {rights.reverse_search(image_path)['note']}")
     parsed, raw = audit_one(client, args.model, image_path,
                             args.region, args.city, args.airport, args.copy,
                             args.scope)
     row = row_from_result(image_path.name, parsed, local)
+    reverse = None
+    if args.reverse_search:  # single mode: explicit request, always run
+        print("  反向圖搜中...")
+        reverse = rights.reverse_search(image_path.read_bytes(), vision_key)
+        apply_reverse_result(row, reverse)
     print_result(row)
     print("\n本地檢查(第一層):")
     print(json.dumps(local, ensure_ascii=False, indent=2))
+    if reverse is not None:
+        print("\n反向圖搜(第三層,Google Vision WEB_DETECTION):")
+        print(json.dumps(reverse, ensure_ascii=False, indent=2))
     if parsed is not None:
         print("\n完整回覆:")
         print(json.dumps(parsed, ensure_ascii=False, indent=2))
@@ -290,7 +341,8 @@ def main():
                    help="授權來源,如 stock:12345 / inhouse / agency(--single 用)")
     p.add_argument("--scope", default="", help="用途:social / paid_ad / ooh / print(--single 用)")
     p.add_argument("--reverse-search", action="store_true",
-                   help="對被標記的圖做反向圖搜(尚未實作,介面保留)")
+                   help="反向圖搜(Google Vision WEB_DETECTION,需 GOOGLE_VISION_API_KEY;"
+                        "批次模式只查被標記的圖以控制費用)")
     p.add_argument("--delay", type=float, default=0.5, help="每筆之間的延遲秒數")
     p.add_argument("--model", default=DEFAULT_MODEL, help="模型 ID")
     args = p.parse_args()
