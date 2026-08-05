@@ -25,6 +25,13 @@
 - action 用語調整:不再寫「請洽法務確認」(不預設使用者有法務部門),改寫具體可執行的下一步
 - 使用說明新增「結果看起來怪怪的?」章節:網頁清單點開圖不一樣、浮水印與反向圖搜矛盾、相似不等於相符等常見情況的原因與判讀
 
+部署記錄(完整版上線,一波三折)
+- 完整版(版權模組+反向圖搜)force push 上線,取代線上舊版(舊版只有地點審查+精簡說明)
+- 坑一:force push 改寫歷史,Streamlit Cloud 增量拉取拉出新舊混雜的程式碼(app.py 新、audit.py 舊)造成 ImportError,推新 commit 也修不好;解法是 Manage app → Reboot app 強制重新 clone
+- 坑二:Reboot 重裝套件抓到當天剛發布的 streamlit 1.61.0,與 starlette 1.4.0 介面不相容,伺服器啟動即 500;解法是 requirements.txt 釘死已知正常組合(streamlit==1.60.0 + starlette==1.3.1)
+- 經驗:此專案日後避免用 force push 部署;套件版本一律釘死,升級前先本地驗證
+- 待辦:雲端 Streamlit 對 use_container_width 參數有棄用警告(2025-12-31 後移除),日後改用 width 參數
+
 ## 2026-08-04(晚間更新:版權風險審查模組)
 
 新功能
