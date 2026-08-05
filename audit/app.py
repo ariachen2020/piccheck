@@ -31,6 +31,7 @@ VERDICT_LABELS = {
     "regional_mismatch": ("🟠 regional_mismatch — 同國不同城市,需人工判斷", st.warning),
     "mismatch": ("🔴 mismatch — 圖與宣傳標的不符!", st.error),
     "uncertain": ("⚪ uncertain — 無足夠訊號辨識,需人工複查", st.info),
+    "not_checked": ("⚪ not_checked — 未指定宣傳標的,略過地點比對", st.info),
 }
 
 st.set_page_config(page_title="行銷素材審查工具", page_icon="🛫", layout="wide")
@@ -147,8 +148,8 @@ def render_reverse(rs: dict):
                  "".join(f"\n- {u}" for u in rs.get("stock_site_urls", [])))
     for note in rs.get("notes", []):
         st.markdown(f"- {note}")
-    st.markdown(f"完全相符 {rs.get('full_match_count', 0)} 筆|"
-                f"部分相符 {rs.get('partial_match_count', 0)} 筆")
+    st.markdown(f"Google 判定完全相符 {rs.get('full_match_count', 0)} 筆|"
+                f"部分相符 {rs.get('partial_match_count', 0)} 筆(實際請點開連結人工比對)")
     pages = rs.get("pages", [])
     if pages:
         with st.expander(f"出現此圖的網頁({len(pages)} 筆)"):
@@ -179,7 +180,8 @@ with tab_single:
     col_input, col_result = st.columns([1, 1])
     with col_input:
         uploaded = st.file_uploader("上傳圖片(jpg / png / webp)", type=["jpg", "jpeg", "png", "webp"])
-        region = st.selectbox("宣傳區域", REGIONS)
+        region = st.selectbox("宣傳區域(選填)", ["(未指定)"] + REGIONS,
+                              help="不指定就略過地點比對,只做文案檢查與版權掃描")
         city = st.text_input("宣傳城市(英文,選填)", placeholder="例如 Ontario;空白 = 泛區域形象素材")
         airport = st.text_input("IATA 機場代碼(選填)", placeholder="例如 ONT — 同名地防呆的關鍵欄位")
         copy_text = st.text_area("文案全文(選填)", placeholder="空白則只審圖")
@@ -208,8 +210,8 @@ with tab_single:
                     try:
                         parsed, raw = audit_bytes(
                             client, uploaded.getvalue(), ext,
-                            region, city.strip(), airport.strip(), copy_text.strip(),
-                            norm_scope(scope),
+                            norm_scope(region), city.strip(), airport.strip(),
+                            copy_text.strip(), norm_scope(scope),
                         )
                     except Exception as e:
                         handle_api_error(e)

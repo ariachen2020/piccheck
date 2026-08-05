@@ -69,7 +69,7 @@ def call_api(client: anthropic.Anthropic, model: str, user_text: str,
         try:
             resp = client.messages.create(
                 model=model,
-                max_tokens=1500,
+                max_tokens=4000,
                 system=SYSTEM_PROMPT,
                 messages=[{
                     "role": "user",
@@ -299,8 +299,6 @@ def run_single(args, client):
     image_path = Path(args.single)
     if not image_path.exists():
         sys.exit(f"找不到圖片:{image_path}")
-    if not args.region:
-        sys.exit("--single 模式必須提供 --region")
     vision_key = get_vision_key(args)
     print(f"審查 {image_path.name} ...")
     local = rights.local_checks(image_path, args.license_source)

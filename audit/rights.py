@@ -168,9 +168,15 @@ def reverse_search(data: bytes, api_key: str) -> dict:
     Callers should only query flagged images in batch runs to stay within
     the free tier (1000 requests/month, ~USD 3.5 per extra 1000).
     """
+    api_key = (api_key or "").strip()
     if not api_key:
         return {"implemented": True, "status": "no_key",
                 "note": "未提供 Google Vision API key,略過反向圖搜"}
+    if not api_key.isascii():
+        return {"implemented": True, "status": "error",
+                "note": "金鑰含有非英文字元,可能複製到遮蔽顯示的版本(AIza••••)或"
+                        "多餘文字。請回 Google 主控台的「憑證」頁,點金鑰旁的"
+                        "「顯示金鑰」再用複製按鈕重新複製完整金鑰。"}
     body = json.dumps({"requests": [{
         "image": {"content": base64.b64encode(_shrink_for_vision(data)).decode("ascii")},
         "features": [{"type": "WEB_DETECTION", "maxResults": 15}],
@@ -202,9 +208,9 @@ def reverse_search(data: bytes, api_key: str) -> dict:
     if stock_hits:
         notes.append("圖片出現在圖庫網站上,極可能是需授權的圖庫素材,請核對採購紀錄")
     if full and not stock_hits:
-        notes.append("網路上找到完全相同的圖,請確認來源與授權")
+        notes.append("網路上找到類似圖片,請確認來源與授權")
     if partial and not full:
-        notes.append("找到部分相符的圖(可能是裁切或改製版本),建議人工比對")
+        notes.append("找到類似圖片(可能是裁切或改製版本),建議人工比對")
     if not (full or partial or pages):
         notes.append("網路上未找到相符圖片(不代表沒有版權,僅供參考)")
     return {
