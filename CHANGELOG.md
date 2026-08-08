@@ -17,6 +17,11 @@
 - 舊版指令完全沒叫模型檢查這些,所以看不出來——結論是補指令而不是換模型
 - 驗收:以模擬回覆單測 row_from_result,integrity_issues 計數與強制人工複查邏輯正確;三個檔案語法檢查通過(本機 Python 3.9 無法跑完整 import,部署環境不受影響)
 
+部署狀態(待確認)
+- push 後線上實測同一張華航圖,結果沒有「畫面合理性問題」區塊,且光影矛盾仍被歸在 ai_generated——判斷線上仍是舊版,Streamlit Cloud 沒有自動更新(與 8/5 的部署經驗一致)
+- 待辦:到 share.streamlit.io 的 Manage app 按 Reboot app,再用同一張圖重測;判斷標準是結果出現「畫面合理性問題」區塊,至少應抓到電車車型(vehicle_error)與飛機視角(physics_error)
+- 若 Reboot 後仍分不清版本,考慮在側欄加一行審查規則版本標記
+
 ## 2026-08-05(反向圖搜上線)
 
 新功能
