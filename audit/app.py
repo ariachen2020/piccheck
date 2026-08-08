@@ -123,6 +123,16 @@ def render_verdict(parsed: dict):
             if f.get("action"):
                 st.caption(f"　建議動作:{f['action']}")
 
+    integrity = parsed.get("integrity_issues") or []
+    if integrity:
+        st.markdown(f"**畫面合理性問題({len(integrity)} 筆):**")
+        for issue in integrity:
+            icon = SEVERITY_ICON.get(issue.get("severity", ""), "▫️")
+            st.markdown(f"- {icon} `{issue.get('type', '?')}`({issue.get('severity', '')})"
+                        f" {issue.get('detail', '')}")
+            if issue.get("action"):
+                st.caption(f"　建議動作:{issue['action']}")
+
     if parsed.get("needs_human_review"):
         st.markdown("⚠️ **此素材需要人工複查**")
 

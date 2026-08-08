@@ -119,8 +119,8 @@ def audit_one(client, model, image_path: Path, region, city, airport, copy_text,
 
 EMPTY_ROW = {"filename": "", "best_guess": "", "confidence": "", "verdict": "",
              "verdict_reason": "", "copy_issue_count": "", "rights_flag_count": "",
-             "max_severity": "", "license_status": "", "reverse_hits": "",
-             "reverse_stock_hit": "", "needs_human_review": True}
+             "integrity_issue_count": "", "max_severity": "", "license_status": "",
+             "reverse_hits": "", "reverse_stock_hit": "", "needs_human_review": True}
 
 
 def is_flagged(row: dict) -> bool:
@@ -148,10 +148,12 @@ def row_from_result(filename: str, parsed: dict | None,
                 "license_status": license_status}
     ident = parsed.get("identification", {})
     flags = parsed.get("rights_flags") or []
+    integrity = parsed.get("integrity_issues") or []
     max_sev = rights.max_severity(flags)
-    # Critical flags and license conflicts always force human review
+    # Critical flags, integrity issues and license conflicts always force human review
     needs_review = (parsed.get("needs_human_review", True)
                     or max_sev in ("critical", "warning")
+                    or rights.max_severity(integrity) in ("critical", "warning")
                     or license_status == "conflict")
     return {
         "filename": filename,
@@ -161,6 +163,7 @@ def row_from_result(filename: str, parsed: dict | None,
         "verdict_reason": parsed.get("verdict_reason", ""),
         "copy_issue_count": len(parsed.get("copy_issues") or []),
         "rights_flag_count": len(flags),
+        "integrity_issue_count": len(integrity),
         "max_severity": max_sev,
         "license_status": license_status,
         "needs_human_review": needs_review,
@@ -182,7 +185,8 @@ def print_result(row: dict):
     print(f"  辨識:{row['best_guess'] or '(無)'}(confidence: {row['confidence'] or '-'})")
     print(f"  verdict:{row['verdict']} — {row['verdict_reason']}")
     print(f"  文案問題:{row['copy_issue_count']} 筆|版權旗標:{row['rights_flag_count']} 筆"
-          f"(最高 {row['max_severity'] or '-'})|授權:{row['license_status'] or '-'}"
+          f"(最高 {row['max_severity'] or '-'})|畫面合理性:{row['integrity_issue_count']} 筆"
+          f"|授權:{row['license_status'] or '-'}"
           f"|需人工複查:{row['needs_human_review']}")
     if row.get("reverse_hits") != "":
         stock = ",且出現在圖庫網站!" if row.get("reverse_stock_hit") else ""
@@ -254,6 +258,7 @@ def run_batch(args, client):
 
     fieldnames = ["filename", "best_guess", "confidence", "verdict",
                   "verdict_reason", "copy_issue_count", "rights_flag_count",
+                  "integrity_issue_count",
                   "max_severity", "license_status", "reverse_hits",
                   "reverse_stock_hit", "needs_human_review"]
     results_csv = out_dir / "results.csv"
