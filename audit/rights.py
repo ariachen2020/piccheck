@@ -45,18 +45,115 @@ def read_metadata(path: Path) -> dict:
                     "has_metadata": bool(fields)}
         except Exception:
             pass  # fall through to Pillow
-    # Simplified fallback: Pillow reads basic EXIF only (no IPTC/XMP)
+    # Pillow fallback: EXIF + IPTC + XMP (covers Streamlit Cloud, where
+    # apt packages cannot be installed and exiftool is unavailable)
+    fields = _pillow_metadata(path)
+    return {"method": "pillow (EXIF/IPTC/XMP)", "fields": fields,
+            "has_metadata": bool(fields)}
+
+
+# XMP properties that carry rights/credit information, mapped to the same
+# field names exiftool reports so downstream checks stay unchanged
+_XMP_FIELDS = {
+    "dc:rights": "Copyright",
+    "dc:creator": "Creator",
+    "photoshop:Credit": "Credit",
+    "photoshop:Source": "Source",
+    "photoshop:AuthorsPosition": "By-lineTitle",
+    "xmpRights:WebStatement": "WebStatement",
+    "xmpRights:UsageTerms": "UsageTerms",
+    "plus:ImageSupplierName": "ImageSupplierName",
+}
+
+# IPTC IIM record 2 datasets for the same purpose
+_IPTC_FIELDS = {
+    (2, 116): "Copyright",
+    (2, 80): "By-line",
+    (2, 110): "Credit",
+    (2, 115): "Source",
+}
+
+
+def _raw_xmp(img: Image.Image) -> str:
+    """Collect raw XMP packets from JPEG/PNG/WebP/TIFF without extra deps."""
+    chunks = []
+    for key in ("xmp", "XML:com.adobe.xmp"):
+        value = img.info.get(key)
+        if value:
+            chunks.append(value)
+    for marker, seg in getattr(img, "applist", []):
+        if marker == "APP1" and seg.startswith(b"http://ns.adobe.com/xap/1.0/"):
+            chunks.append(seg.split(b"\x00", 1)[-1])
+    return "\n".join(c.decode("utf-8", "replace") if isinstance(c, bytes) else str(c)
+                     for c in chunks)
+
+
+def _xmp_values(xmp: str, prop: str) -> list:
+    """Return text values of one XMP property (attribute, element or rdf list)."""
+    import re
+    found = []
+    # element form: <dc:rights><rdf:Alt><rdf:li ...>text</rdf:li>...</dc:rights>
+    for block in re.findall(rf"<{prop}[^>]*>(.*?)</{prop}>", xmp, re.S):
+        items = re.findall(r"<rdf:li[^>]*>(.*?)</rdf:li>", block, re.S)
+        found.extend(items if items else [block])
+    # attribute form: <rdf:Description dc:rights="..."/>
+    found.extend(re.findall(rf'\s{prop}="([^"]*)"', xmp))
+    cleaned = []
+    for v in found:
+        v = re.sub(r"<[^>]+>", "", v).strip()
+        if v and v not in cleaned:
+            cleaned.append(v)
+    return cleaned
+
+
+def _fix_encoding(text: str) -> str:
+    """EXIF strings are decoded as latin-1 by Pillow; recover UTF-8 (e.g. ©)."""
+    try:
+        return text.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+
+
+def _pillow_metadata(path: Path) -> dict:
     fields = {}
     try:
-        exif = Image.open(path).getexif()
+        img = Image.open(path)
+    except Exception:
+        return fields
+    try:
+        exif = img.getexif()
         for tag_id, value in exif.items():
             name = TAGS.get(tag_id, str(tag_id))
             if name in ("Copyright", "Artist") and str(value).strip():
-                fields[name] = str(value).strip()
+                fields[name] = _fix_encoding(str(value).strip())
     except Exception:
         pass
-    return {"method": "pillow (簡化版,僅基本 EXIF)", "fields": fields,
-            "has_metadata": bool(fields)}
+    try:
+        from PIL import IptcImagePlugin
+        iptc = IptcImagePlugin.getiptcinfo(img) or {}
+        for key, name in _IPTC_FIELDS.items():
+            value = iptc.get(key)
+            if value is None:
+                continue
+            if isinstance(value, list):
+                value = "; ".join(v.decode("utf-8", "replace") if isinstance(v, bytes)
+                                  else str(v) for v in value)
+            elif isinstance(value, bytes):
+                value = value.decode("utf-8", "replace")
+            if str(value).strip():
+                fields.setdefault(name, str(value).strip())
+    except Exception:
+        pass
+    try:
+        xmp = _raw_xmp(img)
+        if xmp:
+            for prop, name in _XMP_FIELDS.items():
+                values = _xmp_values(xmp, prop)
+                if values:
+                    fields.setdefault(name, "; ".join(values))
+    except Exception:
+        pass
+    return fields
 
 
 def check_c2pa(path: Path) -> dict | None:

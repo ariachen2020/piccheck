@@ -1,5 +1,23 @@
 # 更新日誌
 
+## 2026-09-08(修復雲端啟動失敗)
+
+問題
+- 網站打不開,Streamlit Cloud 啟動日誌顯示「Release file for bullseye-security is expired」,apt 安裝系統套件失敗,整個 app 停在「Error during processing dependencies」
+- 根因是平台端:Streamlit Cloud 的 Debian 系統套件來源過期,只要專案有 packages.txt 就會觸發 apt 而失敗;程式本身沒有問題(本機用線上同版本套件實跑,頁面執行到底無錯誤)
+
+修正
+- 刪除 packages.txt,雲端不再碰 apt,啟動流程回到只裝 Python 套件
+- 沒有 exiftool 時的 Pillow 備援從「只讀基本 EXIF」升級為完整讀取 EXIF、IPTC(版權、作者、Credit、Source)與 XMP(dc:rights、dc:creator、photoshop:Credit、xmpRights 等),欄位名稱與 exiftool 對齊,後續的授權交叉比對邏輯完全不用改
+- 修正 EXIF 字串的編碼問題(「©」原本會讀成「Â©」)
+- 本機有裝 exiftool 時仍優先用 exiftool,行為不變
+
+驗收
+- 以 exiftool 寫入 EXIF、IPTC、XMP 三種版權欄位的測試 JPEG,以及只有 XMP 的 PNG,模擬雲端無 exiftool 環境:Pillow 備援讀出的欄位與 exiftool 一致,metadata 含 Getty 配 inhouse 正確標 conflict,無 metadata 的圖正確回報空白
+
+部署
+- push 後到 share.streamlit.io 的 Manage app 按 Reboot app,讓雲端重新 clone;8/8 待確認的「畫面合理性檢查」也會一起上線
+
 ## 2026-08-08(新增畫面合理性檢查)
 
 新功能
