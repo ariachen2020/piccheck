@@ -54,7 +54,7 @@ with st.sidebar:
     st.markdown(
         "**API key 怎麼取得?**\n\n"
         "到 [console.anthropic.com](https://console.anthropic.com/) "
-        "註冊後,在 API Keys 頁面建立。每張圖審查成本約 0.03~0.07 美元。\n\n"
+        "註冊後,在 API Keys 頁面建立。每張圖審查成本約 0.03~0.08 美元。\n\n"
         "反向圖搜另需 Google Vision API key(每月前 1000 次免費),"
         "取得步驟見「使用說明」分頁。"
     )
