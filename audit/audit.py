@@ -69,7 +69,7 @@ def call_api(client: anthropic.Anthropic, model: str, user_text: str,
         try:
             resp = client.messages.create(
                 model=model,
-                max_tokens=4000,
+                max_tokens=16000,  # newer models spend part of this on thinking
                 system=SYSTEM_PROMPT,
                 messages=[{
                     "role": "user",
@@ -83,7 +83,8 @@ def call_api(client: anthropic.Anthropic, model: str, user_text: str,
                     ],
                 }],
             )
-            return resp.content[0].text
+            # Newer models may return thinking blocks before the answer
+            return "".join(b.text for b in resp.content if b.type == "text")
         except (anthropic.RateLimitError, anthropic.APIStatusError) as e:
             status = getattr(e, "status_code", None)
             if status not in (429, 529) or attempt == MAX_RETRIES:
