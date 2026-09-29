@@ -20,6 +20,7 @@ from prompts import build_user_text
 REGIONS = ["Europe", "North America", "Northeast Asia", "Southeast Asia", "Oceania"]
 SCOPES = ["(未指定)", "social", "paid_ad", "ooh", "print"]
 SEVERITY_ICON = {"critical": "🔴", "warning": "🟠", "info": "🔵"}
+CHECK_ICON = {"ok": "✅", "issue": "🟠", "unclear": "❓", "not_applicable": "▫️"}
 LICENSE_LABELS = {
     "verified": ("✅ verified — 授權來源已登錄", st.success),
     "double_check": ("🔍 double check — 未登錄授權來源,請人工確認採購紀錄後補上", st.warning),
@@ -132,6 +133,15 @@ def render_verdict(parsed: dict):
                         f" {issue.get('detail', '')}")
             if issue.get("action"):
                 st.caption(f"　建議動作:{issue['action']}")
+
+    checklist = parsed.get("integrity_checklist") or []
+    if checklist:
+        with st.expander("物理檢查清單(飛機視角 / 拍攝角度 / 風向 / 光影)"):
+            for c in checklist:
+                icon = CHECK_ICON.get(c.get("result", ""), "▫️")
+                st.markdown(f"- {icon} `{c.get('item', '?')}`({c.get('result', '')})"
+                            f" {c.get('observation', '')}")
+            st.caption("❓ unclear 代表圖片解析度不足以判斷,建議放大原檔人工確認。")
 
     if parsed.get("needs_human_review"):
         st.markdown("⚠️ **此素材需要人工複查**")

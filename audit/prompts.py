@@ -46,6 +46,13 @@ action 一律寫具體可執行的下一步(如「核對採購紀錄」「確認
 3. physics_error:透視與物理矛盾 — 同一張圖的視角必須一致:仰拍前景配平視背景、地平線位置與鏡頭高度不符、從下往上看飛機卻露出機背(應見機腹)、光影方向互相矛盾、頭髮與衣物風向相反等。
 4. brand_error:品牌細節錯誤 — 航空公司塗裝與商標位置(如華航紅梅花應在尾翼)、機型明顯不符、品牌標準色錯誤。
 
+物理項目逐項必答:physics_error 最容易漏看,因此不論有沒有問題,都要先完成下列四項觀察並寫入 integrity_checklist,再依觀察結果決定 integrity_issues。物件很小也要看,不可因為不起眼就略過。
+- aircraft_view:畫面中的飛機 — 先寫鏡頭相對飛機的位置(由下往上仰視 / 平視 / 由上往下俯視),再寫實際看到的是機腹、側面,還是機背與機翼上表面,最後判斷兩者是否一致。飛機在天空高處而鏡頭在地面時,應見機腹。
+- camera_angle:前景主體的拍攝角度(仰拍 / 平視 / 俯拍),與背景的視角、地平線高度是否一致。
+- wind_direction:頭髮、帽子、衣物、旗幟、樹木各自飄向哪一側,方向是否一致。
+- light_direction:主光源方向,與各物件的受光面、陰影方向是否一致。
+每項的 observation 寫實際看到的內容(可被驗證的觀察);result 填 ok / issue / unclear / not_applicable:畫面中沒有該物件填 not_applicable;解析度不足以判斷填 unclear,並在 observation 說明看不清的部位,不可猜測。result 為 issue 的項目必須在 integrity_issues 有對應的 physics_error。
+
 severity 準則:landmark_error 與 vehicle_error = warning 起跳,出現在主視覺或標示文字旁則 critical(上述屬於宣傳城市的背景拼貼例外,固定為 info);physics_error 與 brand_error = warning;僅輕微風格化、不至於誤導的畫法 = info。
 沒有問題就回空陣列。detail 必須寫出「具體哪裡、為什麼錯」(可被驗證的觀察),action 寫具體修正建議(如「改用真實 W 級電車照片或修正車型」)。
 
@@ -61,6 +68,7 @@ severity 準則:landmark_error 與 vehicle_error = warning 起跳,出現在主�
   "verdict_reason": "一句話說明",
   "copy_issues": [{"type": "ambiguity | typo | compliance", "detail": "..."}],
   "rights_flags": [{"type": "watermark | third_party_ip | identifiable_person | restricted_landmark | ai_generated | editorial_only_suspect", "severity": "critical | warning | info", "detail": "具體位置與觀察", "action": "建議的人工處理動作"}],
+  "integrity_checklist": [{"item": "aircraft_view | camera_angle | wind_direction | light_direction", "observation": "實際看到的內容", "result": "ok | issue | unclear | not_applicable"}],
   "integrity_issues": [{"type": "landmark_error | vehicle_error | physics_error | brand_error", "severity": "critical | warning | info", "detail": "具體哪裡、為什麼錯", "action": "具體修正建議"}],
   "needs_human_review": true/false
 }
