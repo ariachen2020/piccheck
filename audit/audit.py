@@ -26,7 +26,7 @@ from PIL import Image
 import rights
 from prompts import SYSTEM_PROMPT, build_user_text
 
-DEFAULT_MODEL = os.environ.get("AUDIT_MODEL", "claude-sonnet-4-6")
+DEFAULT_MODEL = os.environ.get("AUDIT_MODEL", "claude-sonnet-5-5")
 MAX_BYTES = 5 * 1024 * 1024  # resize images above this size
 MAX_LONG_EDGE = 2000         # px, long-edge cap when resizing
 MAX_RETRIES = 3

@@ -10,7 +10,7 @@
 
 **技術基礎:**
 - Python 3.11+,`anthropic` 官方 SDK
-- Model:`claude-sonnet-4-6`(成本低、vision 能力足夠;可用環境變數切換)
+- Model:`claude-sonnet-5-5`(2026-09-29 由 claude-sonnet-4-6 升級;可用環境變數切換)
 - API key 從環境變數 `ANTHROPIC_API_KEY` 讀取,不寫進程式碼
 - 圖片以 base64 傳入,支援 jpg/png/webp;超過 5MB 先自動縮圖(Pillow,長邊上限 2000px)
 
